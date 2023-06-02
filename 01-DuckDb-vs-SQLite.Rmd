@@ -1,0 +1,200 @@
+---
+title: "DuckDb vs SQLite"
+output: html_document
+date: "2023-06-02"
+---
+
+# DuckDb versus SQLite
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Supported data types
+
+DuckDb supports all of the standard data types in SQL as well as a couple more:
+`BOOLEAN`, `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`, `FLOAT`, `DOUBLE`, `VARCHAR`, `DATE`, `TIME`, `TIMESTAMP`, `INTERVAL`, `HUGEINT`.
+Here we will demonstrate the behavior for the subset of types we use most commonly use.
+
+The implementation is effectively identical for our purposes as there is an R engine equivalent of RSQLite for DuckDb called `duckdb`.
+
+
+```{r, results = 'hide'}
+data <- data.frame(
+  logical = TRUE,
+  integer = 1L,
+  real = 1.1,
+  character = "a",
+  blob = blob::as_blob(NA),
+  date = as.Date("2023-01-01"),
+  time = dttr2::dtt_time("1:00:00"),
+  datetime = dttr2::dtt_date_time("2023-01-01 01:00:00")
+)
+
+table_definition <- "CREATE TABLE data (
+       logical BOOLEAN,
+       integer INTEGER,
+       real REAL,
+       character TEXT,
+       blob BLOB,
+       date DATE,
+       time TIME,
+       datetime TIMESTAMP
+)"
+
+# SQL
+conn_s <- DBI::dbConnect(
+  RSQLite::SQLite(), dbname = ":memory:", extended_types = TRUE
+  )
+
+DBI::dbExecute(conn_s, table_definition)
+DBI::dbAppendTable(conn_s, "data", data)
+
+# DuckDb
+conn_d <- DBI::dbConnect(duckdb::duckdb(), dbname = ":memory:")
+
+DBI::dbExecute(conn_d, table_definition)
+DBI::dbAppendTable(conn_d, "data", data)
+
+```
+```{r}
+# compare
+sql <- DBI::dbReadTable(conn_s, "data")
+duck <- DBI::dbReadTable(conn_d, "data")
+
+DBI::dbDisconnect(conn_s, shutdown = TRUE)
+DBI::dbDisconnect(conn_d, shutdown = TRUE)
+
+str(sql)
+str(duck)
+
+```
+
+</br>
+Notably, there are differences in the class of objects returned for times, blobs, and logical data types
+
+|Defined Type|Returned SQL|Returned DuckDb|Explanation|
+|------------|------------|------------|--------------------------------------|
+|__boolean__|__integer__|__logical__|SQL returns a `1` or `0` equivalent of `TRUE` or `FALSE`|
+|integer|integer|integer||
+|real|numeric|numeric||
+|text|character|character||
+|__blob__|__blob__, __vctrs_list_of__, __vctrs_vctr__, __list__|__list__|SQL returns a proper `blob` object while DuckDB returns a `raw` vector|
+|date|Date|Date|
+|__time__|__hms__, __difftime__|__difftime__|There is curated support for `hms` object with RSQLite, while DuckDB just returns the time difference from the beginning of the day|
+|timestamp|POSIXct, POSIXt|POSIXct, POSIXt|note: both engines convert datetimes to utc then store as numeric in the database. The returned datetime is in UTC|
+
+</br>
+
+### Type Enforcement: DuckDb
+
+DuckDB natively enforces the types defined in tables by erroring when the data provided is incompatible with the column definition.
+
+```{r}
+# Define invalid values for each column type
+invalid_values <- list(
+  "BOOLEAN" = "a",
+  "INTEGER" = "a",
+  "REAL" = "a",
+  "BLOB" = 1L,
+  "DATE" = "a",
+  "DATE" = 1,
+  "DATE" = "2023-13-01",
+  "TIME" = "a",
+  "TIME" = 1,
+  "TIME" = "25:00:00",
+  "TIMESTAMP" = "a",
+  "TIMESTAMP" = 1,
+  "TIMESTAMP" = "2023-01-01 25:00:00"
+)
+
+column_types <- names(invalid_values)
+
+msgs <- c()
+i <- 1
+for (i in seq_along(column_types)) {
+
+  conn <- DBI::dbConnect(duckdb::duckdb(), dbname = ":memory:")
+  column_type <- column_types[i]
+
+  # generate table with each column type
+  sql <- paste0("CREATE TABLE data (",
+                "col ", column_type,
+                ")")
+  DBI::dbExecute(conn, sql)
+
+  # try to insert invalid data
+  err <- try(
+    expr = DBI::dbAppendTable(conn, "data", data.frame(col = invalid_values[[i]])),
+    silent = TRUE
+  )
+  DBI::dbDisconnect(conn, shutdown = TRUE)
+
+  msgs <- c(msgs, err[1])
+}
+
+# clean up error msgs
+msgs <- gsub("Error : rapi_execute: Failed to run query\nError: Conversion Error: ", "", msgs)
+
+error_summary <- tibble::tibble(
+  db_column_type = column_types,
+  supplied_r_class = as.character(sapply(invalid_values, class)),
+  supplied_r_value = as.character(invalid_values),
+  error = msgs
+)
+
+print(error_summary)
+
+```
+Note: No errors occur for TEXT columns as any R type can and will be coerced (even blobs)
+
+### Type Enforcement: SQL
+
+SQL does not enforce data types.
+
+``` {r}
+
+invalid_values <- list(
+  "BOOLEAN" = "a",
+  "INTEGER" = "a",
+  "REAL" = "a",
+  "BLOB" = 1L,
+  "DATE" = "a",
+  "DATE" = 1,
+  "DATE" = "2023-13-01",
+  "TIME" = "a",
+  "TIME" = 1,
+  "TIME" = "25:00:00",
+  "TIMESTAMP" = "a",
+  "TIMESTAMP" = 1,
+  "TIMESTAMP" = "2023-01-01 25:00:00"
+)
+
+column_types <- names(invalid_values)
+
+results <- list()
+i <- 1
+for (i in seq_along(column_types)) {
+  
+  conn <- DBI::dbConnect(RSQLite::SQLite(), dbname = ":memory:")
+  column_type <- column_types[i]
+  
+  # generate table with each column type
+  sql <- paste0("CREATE TABLE data (",
+                "col ", column_type,
+                ")")
+  DBI::dbExecute(conn, sql)
+  
+  # try to insert invalid data
+  DBI::dbAppendTable(conn, "data", data.frame(col = invalid_values[[i]]))
+  data <- DBI::dbReadTable(conn, "data")
+  print(data$col)
+  
+}
+
+```
+
+
+### Other Notes
+DuckDB is not compatible with DB browser for active viewing of the database tables, still looking for the best alternative for viewing.
+
