@@ -20,12 +20,12 @@ knitr::opts_chunk$set(echo = TRUE)
 Lets do a basic performance test for read and write transactions.
 ``` {r, eval = FALSE}
 
-conn_s <- dbConnect(RSQLite::SQLite(), dbname = ":memory:")
-conn_d <- dbConnect(duckdb::duckdb(), dbdir = ":memory:")
+conn_s <- DBI::dbConnect(RSQLite::SQLite(), dbname = ":memory:")
+conn_d <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
 
 data <- data.frame(
   id = 1:10000000,
-  value = rnorm(1000000)
+  value = rnorm(10000000)
 )
 sqlite_write <- system.time(DBI::dbWriteTable(conn_s, "data", data))
 sqlite_read <- system.time(DBI::dbGetQuery(conn_s, "SELECT * FROM data"))
@@ -52,10 +52,10 @@ paste("DuckDB read time:", round(duckdb_read[3], 3), "seconds")
 
 ### Supported data types
 
-DuckDb supports all of the standard data types in SQL (including extended types):
+DuckDb supports all of the standard data types in SQL (including extended types) and more:
 `BOOLEAN`, `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`, `FLOAT`, `DOUBLE`, `VARCHAR`, `DATE`, `TIME`, `TIMESTAMP`, `INTERVAL`, `HUGEINT`.
 
-DuckDb also supports some additional types, most notably the nested data types: `LIST`, `STRUCT`, `MAP` and `UNION`.
+Notably, DuckDb aslo supports some nested data types: `LIST`, `STRUCT`, `MAP` and `UNION`.
 
 Here we will demonstrate the behavior for the subset of types we use most commonly use.
 
