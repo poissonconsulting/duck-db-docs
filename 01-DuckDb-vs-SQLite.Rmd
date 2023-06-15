@@ -231,3 +231,57 @@ DBI::dbAppendTable(conn, "data", invalid_data)
 ```
 
 All data is written to the database with no errors and without changing the table definition.
+
+### Geometries
+
+Due to the differences in the way BLOBs are stored between the two platforms, slightly different operations are required to get back the original object after reading from the database.
+
+
+```{r, results = 'hide'}
+crs <- 4326
+
+data <- data.frame(
+  geometry = sf::st_sfc(sf::st_point(c(1, 1)), crs = crs)
+)
+
+# convert geometry to blob
+data$geometry <- sf::st_as_binary(data$geometry)
+
+
+table_definition <- "CREATE TABLE data (geometry BLOB)"
+
+# SQL
+conn_s <- DBI::dbConnect(
+  RSQLite::SQLite(), dbname = ":memory:", extended_types = TRUE
+)
+
+DBI::dbExecute(conn_s, table_definition)
+DBI::dbAppendTable(conn_s, "data", data)
+
+# DuckDb
+conn_d <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
+
+DBI::dbExecute(conn_d, table_definition)
+DBI::dbAppendTable(conn_d, "data", data)
+```
+```{r}
+# compare
+sql <- DBI::dbReadTable(conn_s, "data")
+duck <- DBI::dbReadTable(conn_d, "data")
+
+# simple conversion to sf column and activate
+sql$geometry <- sf::st_as_sfc(sql$geometry, crs = crs)
+sql <- sf::st_as_sf(sql)
+
+# additional step needed to convert the raw vector to a blob before st_as_sfc
+# will correctly convert it to an sf object
+duck$geometry <- blob::as_blob(duck$geometry)
+duck$geometry <- sf::st_as_sfc(duck$geometry, crs = crs)
+duck <- sf::st_as_sf(duck)
+
+DBI::dbDisconnect(conn_s, shutdown = TRUE)
+DBI::dbDisconnect(conn_d, shutdown = TRUE)
+
+identical(sql, duck)
+
+```
